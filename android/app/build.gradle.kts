@@ -39,6 +39,11 @@ android {
     }
 }
 
+dependencies {
+    // Thêm dòng này để dùng FusedLocationProviderClient
+    implementation("com.google.android.gms:play-services-location:21.1.0")
+}
+
 flutter {
     source = "../.."
 }

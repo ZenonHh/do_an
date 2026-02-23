@@ -1,31 +1,51 @@
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:audioplayers/audioplayers.dart';
+import '../models/poi_model.dart';
+import 'package:flutter/foundation.dart';
 
 class AudioService {
   final FlutterTts _tts = FlutterTts();
-  String? _lastPoiId; // Dùng để tránh việc App nói đi nói lại một chỗ (Anti-spam)
+  final AudioPlayer _audioPlayer = AudioPlayer();
+  bool _isPlaying = false;
+  POI? _lastPlayedPOI;
 
   AudioService() {
     _initTts();
   }
 
   void _initTts() async {
-    await _tts.setLanguage("vi-VN"); // Đặt ngôn ngữ tiếng Việt
-    await _tts.setPitch(1.0);        // Độ cao giọng nói
-    await _tts.setSpeechRate(0.5);   // Tốc độ nói (0.5 là vừa nghe)
+    await _tts.setLanguage("vi-VN");
+    await _tts.setPitch(1.0);
+    await _tts.setSpeechRate(0.5);
+
+    _tts.setCompletionHandler(() => _isPlaying = false);
+    _tts.setStartHandler(() => _isPlaying = true);
   }
 
-  // Hàm phát giọng nói
-  Future<void> speak(String text, String poiId) async {
-    // Nếu vẫn là điểm cũ thì không nói lại (Requirement 2: Cooldown/Anti-spam)
-    if (_lastPoiId == poiId) return;
+  Future<void> playPOI(POI poi) async {
+    if (_isPlaying && _lastPlayedPOI?.id == poi.id) return;
+    if (_isPlaying) await stop();
 
-    await _tts.speak(text);
-    _lastPoiId = poiId; 
+    _lastPlayedPOI = poi;
+
+    // Ưu tiên phát Audio File nếu có, nếu không dùng TTS
+    if (poi.narrationType == NarrationType.audio) {
+      debugPrint("Đang phát file ghi âm: ${poi.content}");
+      await _audioPlayer.play(AssetSource(poi.content));
+      _isPlaying = true;
+    } else {
+      debugPrint("Đang phát giọng đọc TTS: ${poi.content}");
+      await _tts.speak(poi.content);
+    }
   }
 
-  // Hàm dừng (khi người dùng đi ra khỏi vùng)
   Future<void> stop() async {
     await _tts.stop();
-    _lastPoiId = null; 
+    await _audioPlayer.stop();
+    _isPlaying = false;
+  }
+
+  void dispose() {
+    _audioPlayer.dispose();
   }
 }

@@ -14,6 +14,8 @@ dependencies:
   latlong2: ^0.9.1
   geolocator: ^13.0.1
   flutter_tts: ^4.2.2
+  url_launcher: ^6.1.10 # Thêm để mở link
+  audioplayers: ^6.0.0 # Thêm để phát file audio
 
 dev_dependencies:
   flutter_test:
@@ -22,3 +24,7 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # Khai báo thư mục chứa file audio
+  assets:
+    - assets/audio/
