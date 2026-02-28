@@ -1,51 +1,76 @@
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:audioplayers/audioplayers.dart';
 import '../models/poi_model.dart';
 import 'package:flutter/foundation.dart';
 
 class AudioService {
   final FlutterTts _tts = FlutterTts();
-  final AudioPlayer _audioPlayer = AudioPlayer();
+
   bool _isPlaying = false;
   POI? _lastPlayedPOI;
 
   AudioService() {
-    _initTts();
+    _initAudioHandlers();
   }
 
-  void _initTts() async {
-    await _tts.setLanguage("vi-VN");
-    await _tts.setPitch(1.0);
-    await _tts.setSpeechRate(0.5);
+  void _initAudioHandlers() async {
+    // 1. Kiểm tra và thiết lập TTS
+    try {
+      // Đảm bảo máy có bộ máy ngôn ngữ tiếng Việt
+      var isAvailable = await _tts.isLanguageAvailable("vi-VN");
+      if (isAvailable) {
+        await _tts.setLanguage("vi-VN");
+      } else {
+        await _tts.setLanguage("en-US"); // Dự phòng nếu máy không hỗ trợ tiếng Việt
+      }
+      
+      await _tts.setPitch(1.0);
+      await _tts.setSpeechRate(0.5); // Tốc độ vừa phải
+    } catch (e) {
+      debugPrint("TTS Setup Error: $e");
+    }
 
-    _tts.setCompletionHandler(() => _isPlaying = false);
-    _tts.setStartHandler(() => _isPlaying = true);
+    // 2. Event Handlers cho TTS
+    _tts.setStartHandler(() {
+      _isPlaying = true;
+      debugPrint("Bắt đầu nói...");
+    });
+    
+    _tts.setCompletionHandler(() {
+      _isPlaying = false;
+      debugPrint("Nói xong!");
+    });
+
+    _tts.setErrorHandler((msg) {
+      _isPlaying = false;
+      debugPrint("Lỗi TTS: $msg");
+    });
   }
 
   Future<void> playPOI(POI poi) async {
+    // 1. Chống phát trùng lặp cùng một điểm
     if (_isPlaying && _lastPlayedPOI?.id == poi.id) return;
-    if (_isPlaying) await stop();
 
+    // 2. Luôn dừng trước khi nói câu mới
+    await stop();
     _lastPlayedPOI = poi;
 
-    // Ưu tiên phát Audio File nếu có, nếu không dùng TTS
-    if (poi.narrationType == NarrationType.audio) {
-      debugPrint("Đang phát file ghi âm: ${poi.content}");
-      await _audioPlayer.play(AssetSource(poi.content));
-      _isPlaying = true;
-    } else {
-      debugPrint("Đang phát giọng đọc TTS: ${poi.content}");
-      await _tts.speak(poi.content);
+    try {
+      // CHỈ DÙNG TTS CHO TẤT CẢ CÁC QUÁN
+      debugPrint("Đang đọc thuyết minh cho: ${poi.name}");
+      // Đọc nội dung từ trường description trong poi_model
+      await _tts.speak(poi.description); 
+    } catch (e) {
+      debugPrint("Lỗi TTS: $e");
+      _isPlaying = false;
     }
   }
 
   Future<void> stop() async {
     await _tts.stop();
-    await _audioPlayer.stop();
     _isPlaying = false;
   }
 
   void dispose() {
-    _audioPlayer.dispose();
+    _tts.stop();
   }
 }
