@@ -1,16 +1,18 @@
 import 'dart:async';
-import 'package:do_an/services/poi_repository.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:url_launcher/url_launcher.dart';
+
 import '../models/poi_model.dart';
+import '../services/poi_repository.dart';
 import '../services/geofence_service.dart';
 import '../services/audio_service.dart';
-import 'package:url_launcher/url_launcher.dart';
 
 class MapScreen extends StatefulWidget {
   const MapScreen({super.key});
+
   @override
   State<MapScreen> createState() => _MapScreenState();
 }
@@ -18,8 +20,10 @@ class MapScreen extends StatefulWidget {
 class _MapScreenState extends State<MapScreen> {
   static const _eventChannel = EventChannel('com.example.do_an/location_stream');
 
-  LatLng _userPos = const LatLng(21.0285, 105.8542); // Default to Ho Guom
+  // Tọa độ khu vực trung tâm phố ốc Vĩnh Khánh
+  LatLng _userPos = const LatLng(10.7583, 106.7065);
   POI? _activePOI;
+  final Set<String> _playedHistory = {};
   final MapController _mapController = MapController();
   StreamSubscription? _locationSubscription;
 
@@ -30,9 +34,11 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void initState() {
     super.initState();
-    // Lấy dữ liệu từ Repository thay vì hardcode
     _poiList = POIRepository.getTourPoints();
-    _geofenceService = GeofenceService(_poiList);
+    _geofenceService = GeofenceService(
+      _poiList,
+      cooldown: const Duration(minutes: 5),
+    );
     _startListeningLocation();
   }
 
@@ -48,27 +54,41 @@ class _MapScreenState extends State<MapScreen> {
     });
   }
 
-  void _processLocationUpdate(LatLng userLoc) {
+  void _processLocationUpdate(LatLng newLoc) {
     if (!mounted) return;
 
-    setState(() {
-      _userPos = userLoc;
-    });
+    double distanceMoved = const Distance().as(LengthUnit.Meter, _userPos, newLoc);
 
-    POI? nearbyPOI = _geofenceService.checkPOIs(userLoc);
-
-    if (nearbyPOI != null && nearbyPOI.id != _activePOI?.id) {
+    if (distanceMoved > 2 || _activePOI == null) {
       setState(() {
-        _activePOI = nearbyPOI;
+        _userPos = newLoc;
       });
-      _audioService.playPOI(nearbyPOI);
+
+      POI? nearbyPOI = _geofenceService.checkPOIs(newLoc);
+
+      if (nearbyPOI != null) {
+        if (nearbyPOI.id != _activePOI?.id && !_playedHistory.contains(nearbyPOI.id)) {
+          setState(() {
+            _activePOI = nearbyPOI;
+          });
+          _audioService.playPOI(nearbyPOI);
+          _playedHistory.add(nearbyPOI.id);
+        }
+      } else {
+        if (_activePOI != null) {
+          setState(() {
+            _activePOI = null;
+          });
+          _audioService.stop();
+        }
+      }
     }
   }
 
   @override
   void dispose() {
     _locationSubscription?.cancel();
-    _audioService.stop();
+    _audioService.dispose();
     super.dispose();
   }
 
@@ -76,47 +96,196 @@ class _MapScreenState extends State<MapScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Audio Tour Guide"),
-      ),
-      body: FlutterMap(
-        mapController: _mapController,
-        options: MapOptions(
-          initialCenter: _userPos,
-          initialZoom: 15.0,
-          onMapReady: () => _mapController.move(_userPos, 15.0)
-        ),
-        children: [
-          TileLayer(
-            urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-            userAgentPackageName: 'com.example.do_an',
-          ),
-          CircleLayer(
-            circles: _poiList.map((poi) => CircleMarker(
-              point: poi.location,
-              radius: poi.radius,
-              useRadiusInMeter: true,
-              color: Colors.green.withOpacity(0.15),
-              borderColor: Colors.green,
-              borderStrokeWidth: 1,
-            )).toList(),
-          ),
-          MarkerLayer(
-            markers: [
-              Marker(point: _userPos, child: const Icon(Icons.navigation, color: Colors.blue, size: 35)),
-              ..._poiList.map((poi) => Marker(
-                point: poi.location,
-                child: GestureDetector(
-                  onTap: () => _showPOIDetail(poi),
-                  child: Icon(
-                    Icons.location_on,
-                    color: _activePOI?.id == poi.id ? Colors.red : Colors.orange,
-                    size: 30,
-                  ),
-                ),
-              )),
-            ],
+        title: const Text("Vĩnh Khánh Food Tour", style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => setState(() => _playedHistory.clear()),
           ),
         ],
+      ),
+      body: Stack(
+        children: [
+          // 1. LỚP BẢN ĐỒ
+          FlutterMap(
+            mapController: _mapController,
+            options: MapOptions(
+              initialCenter: _userPos,
+              initialZoom: 17.0,
+            ),
+            children: [
+              TileLayer(
+                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                userAgentPackageName: 'com.example.do_an',
+                maxZoom: 19,
+              ),
+
+              // BÁN KÍNH GEOFENCE
+              CircleLayer(
+                circles: _poiList.map((poi) => CircleMarker(
+                  point: poi.location,
+                  radius: poi.radius.toDouble(),
+                  useRadiusInMeter: true,
+                  color: _activePOI?.id == poi.id 
+                      ? Colors.orange.withValues(alpha: 0.3) 
+                      : Colors.blue..withValues(alpha: 0.1),
+                  borderColor: _activePOI?.id == poi.id ? Colors.orange : Colors.blue,
+                  borderStrokeWidth: 2,
+                )).toList(),
+              ),
+
+              // CÁC ĐIỂM MARKER
+              MarkerLayer(
+                markers: [
+                  // Vị trí người dùng (Chấm xanh)
+                  Marker(
+                    point: _userPos,
+                    width: 60,
+                    height: 60,
+                    child: _buildUserMarker(),
+                  ),
+                  
+                  // Danh sách các quán ốc
+                  ..._poiList.map((poi) {
+                    final bool isActive = _activePOI?.id == poi.id;
+                    return Marker(
+                      point: poi.location,
+                      width: 50,
+                      height: 50,
+                      child: GestureDetector(
+                        onTap: () => _showPOIDetail(poi),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 300),
+                          child: Icon(
+                            Icons.restaurant,
+                            color: isActive ? Colors.orange : Colors.grey,
+                            size: isActive ? 40 : 30,
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ],
+          ),
+
+          // 2. NÚT CHỨC NĂNG GÓC TRÊN (Dịch, Định vị)
+          Positioned(
+            top: 20,
+            right: 15,
+            child: Column(
+              children: [
+                _buildFloatingButton(Icons.translate, () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("Chuyển đổi ngôn ngữ...")),
+                  );
+                }),
+                const SizedBox(height: 10),
+                _buildFloatingButton(Icons.gps_fixed, () {
+                  _mapController.move(_userPos, 18.0);
+                }),
+              ],
+            ),
+          ),
+
+          // 3. THẺ THUYẾT MINH (Khi đi vào vùng Geofence)
+          if (_activePOI != null)
+            Positioned(
+              bottom: 30,
+              left: 20,
+              right: 20,
+              child: _buildActivePOICard(),
+            ),
+        ],
+      ),
+      
+      // NÚT ĐỊNH VỊ CHÍNH
+      floatingActionButton: FloatingActionButton(
+        backgroundColor: Colors.white,
+        onPressed: () => _mapController.move(_userPos, 18),
+        child: const Icon(Icons.my_location, color: Colors.blue),
+      ),
+    );
+  }
+
+  // WIDGET HỖ TRỢ
+  Widget _buildUserMarker() {
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Container(
+          width: 35,
+          height: 35,
+          decoration: BoxDecoration(color: Colors.blue..withValues(alpha: 0.2), shape: BoxShape.circle),
+        ),
+        Container(
+          width: 18,
+          height: 18,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            shape: BoxShape.circle,
+            boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))],
+          ),
+          child: Center(
+            child: Container(
+              width: 12,
+              height: 12,
+              decoration: const BoxDecoration(color: Colors.blue, shape: BoxShape.circle),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildActivePOICard() {
+    return Card(
+      elevation: 10,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+      child: Padding(
+        padding: const EdgeInsets.all(15),
+        child: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: _activePOI!.imageAsset != null 
+                ? Image.asset('assets/images/${_activePOI!.imageAsset}', width: 60, height: 60, fit: BoxFit.cover)
+                : Container(width: 60, height: 60, color: Colors.grey[200]),
+            ),
+            const SizedBox(width: 15),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text("ĐANG THUYẾT MINH", style: TextStyle(color: Colors.orange, fontSize: 10, fontWeight: FontWeight.bold)),
+                  Text(_activePOI!.name, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  Text(_activePOI!.description, maxLines: 1, overflow: TextOverflow.ellipsis),
+                ],
+              ),
+            ),
+            const Icon(Icons.volume_up, color: Colors.orange),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFloatingButton(IconData icon, VoidCallback onPressed) {
+    return SizedBox(
+      width: 45,
+      height: 45,
+      child: FloatingActionButton(
+        heroTag: null,
+        elevation: 4,
+        backgroundColor: Colors.white,
+        foregroundColor: Colors.black,
+        onPressed: onPressed,
+        child: Icon(icon, size: 20),
       ),
     );
   }
@@ -129,35 +298,28 @@ class _MapScreenState extends State<MapScreen> {
       builder: (context) => DraggableScrollableSheet(
         expand: false,
         initialChildSize: 0.6,
-        maxChildSize: 0.9,
-        minChildSize: 0.4,
         builder: (context, scrollController) => SingleChildScrollView(
           controller: scrollController,
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (poi.imageUrl != null)
-                ClipRRect(
-                  borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-                  child: Image.network(poi.imageUrl!, fit: BoxFit.cover, width: double.infinity, height: 200),
-                ),
+              if (poi.imageAsset != null)
+                Image.asset('assets/images/${poi.imageAsset}', fit: BoxFit.cover, width: double.infinity, height: 250)
+              else 
+                Container(height: 250, color: Colors.grey[300], child: const Icon(Icons.image, size: 50)),
               Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(poi.name, style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                    Text(poi.name, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 10),
-                    Text(poi.description, style: const TextStyle(fontSize: 16, height: 1.5)),
+                    Text(poi.description),
                     const SizedBox(height: 20),
                     ElevatedButton.icon(
-                      onPressed: () => _launchURL(poi.mapLink),
+                      onPressed: () => _launchURL('https://www.google.com/maps/search/?api=1&query=${poi.location.latitude},${poi.location.longitude}'),
                       icon: const Icon(Icons.directions),
-                      label: const Text("Chỉ đường (Google Maps)"),
-                      style: ElevatedButton.styleFrom(
-                        minimumSize: const Size(double.infinity, 50),
-                        textStyle: const TextStyle(fontSize: 16)
-                      ),
+                      label: const Text("Chỉ đường đến quán"),
+                      style: ElevatedButton.styleFrom(minimumSize: const Size(double.infinity, 50)),
                     ),
                   ],
                 ),
@@ -169,11 +331,10 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  Future<void> _launchURL(String? urlString) async {
-    if (urlString == null) return;
+  Future<void> _launchURL(String urlString) async {
     final Uri url = Uri.parse(urlString);
-    if (!await launchUrl(url)) {
-      debugPrint('Could not launch $url');
+    if (!await launchUrl(url, mode: LaunchMode.externalApplication)) {
+      debugPrint('Lỗi mở link: $url');
     }
   }
 }
